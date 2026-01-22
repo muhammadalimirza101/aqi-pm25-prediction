@@ -1,0 +1,60 @@
+name: Daily Training (Train -> Register Model)
+
+on:
+  schedule:
+    - cron: "30 0 * * *"   # daily (UTC)
+  workflow_dispatch:
+
+jobs:
+  train-daily:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Train model
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python 03_train_rf_pm25_next1h.py
+
+      - name: Register model in MongoDB
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python - << 'PY'
+          import os
+          from datetime import datetime, timezone
+          from pymongo import MongoClient
+
+          uri = os.environ["MONGO_URI"]
+          client = MongoClient(uri)
+          db = client["feature_store"]
+          col = db["model_registry"]
+
+          model_path = "models/rf_pm25_next1h.pkl"
+          with open(model_path, "rb") as f:
+            b = f.read()
+
+          doc = {
+            "model_name": "rf_pm25_next1h",
+            "framework": "scikit-learn",
+            "created_at": datetime.now(timezone.utc),
+            "model_path": model_path,
+            "model_bytes": b,
+          }
+
+          col.insert_one(doc)
+          print("✅ Model registered to feature_store.model_registry. bytes:", len(b))
+          PY

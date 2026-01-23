@@ -21,8 +21,14 @@ jobs:
           python -m pip install --upgrade pip
           pip install -r requirements.txt
 
-      - name: Train 72h model and register in MongoDB
+      - name: Train 72h model and register metadata in MongoDB
         env:
           MONGO_URI: ${{ secrets.MONGO_URI }}
         run: |
           python 03_train_rf_pm25_next72h.py
+
+      - name: Upload trained 72h model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rf_pm25_next72h_model
+          path: models/rf_pm25_next72h.pkl

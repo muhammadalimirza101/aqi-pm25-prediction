@@ -1,6 +1,7 @@
 import os
 import requests
 from datetime import datetime, timezone
+import pandas as pd
 from pymongo import MongoClient
 
 CITY = "Karachi"
@@ -15,29 +16,10 @@ OPEN_METEO_URL = (
     "&timezone=UTC"
 )
 
-def parse_utc_hour(ts_str: str) -> datetime:
-    """
-    Open-Meteo returns timestamps like '2026-01-26T23:00'
-    (no Z). We treat them as UTC because timezone=UTC is used.
-    """
-    # If it already contains timezone info, fromisoformat can handle it.
-    dt = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-    # If it's naive (no tzinfo), force UTC
-    if dt.tzinfo is None:
-        dt = dt.replace(tzinfo=timezone.utc)
-    return dt
-
-def floor_to_hour(dt: datetime) -> datetime:
-    """Round down to the start of the hour."""
-    return dt.replace(minute=0, second=0, microsecond=0)
-
 def main():
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
-        raise RuntimeError("MONGO_URI env var not set. Add it in GitHub Secrets and in env when running locally.")
-
-    # Current time in UTC, floored to hour (so comparisons match hourly timestamps)
-    now_utc = floor_to_hour(datetime.now(timezone.utc))
+        raise RuntimeError("MONGO_URI env var not set")
 
     # Fetch raw data
     r = requests.get(OPEN_METEO_URL, timeout=30)
@@ -47,28 +29,35 @@ def main():
     times = payload["hourly"]["time"]
     hourly = payload["hourly"]
 
+    now_utc = datetime.now(timezone.utc)
+    now_hour = now_utc.replace(minute=0, second=0, microsecond=0)
+
     client = MongoClient(mongo_uri)
     db = client["feature_store"]
     raw_col = db["air_quality_raw"]
 
     inserted = 0
-    updated = 0
-    skipped_future = 0
+    processed = 0
 
     for i, t in enumerate(times):
-        t_dt = parse_utc_hour(t)
-
-        # ✅ Skip any future hours (forecast)
-        if t_dt > now_utc:
-            skipped_future += 1
+        # Parse time safely
+        dt = pd.to_datetime(t, utc=True, errors="coerce")
+        if pd.isna(dt):
             continue
+
+        # ✅ keep only past/current hour (no future)
+        if dt.to_pydatetime() > now_hour:
+            continue
+
+        # Save as consistent ISO with Z
+        t_iso = dt.to_pydatetime().replace(tzinfo=timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
 
         doc = {
             "source": "open-meteo",
             "city": CITY,
             "country": COUNTRY,
             "location": {"lat": LAT, "lon": LON},
-            "timestamp": t_dt.isoformat().replace("+00:00", "Z"),  # store consistent UTC string
+            "timestamp": t_iso,
             "ingested_at": datetime.now(timezone.utc).isoformat(),
             "pollutants": {
                 "pm2_5": hourly["pm2_5"][i],
@@ -81,22 +70,17 @@ def main():
         }
 
         res = raw_col.update_one(
-            {"city": CITY, "timestamp": doc["timestamp"]},
+            {"city": CITY, "timestamp": t_iso},
             {"$set": doc},
             upsert=True
         )
-
+        processed += 1
         if res.upserted_id is not None:
             inserted += 1
-        else:
-            updated += 1
 
-    print("✅ RAW ingestion complete (PAST/CURRENT ONLY)")
-    print(f"🕒 Now (UTC hour): {now_utc.isoformat().replace('+00:00', 'Z')}")
-    print(f"🆕 Inserted: {inserted}")
-    print(f"🔁 Updated: {updated}")
-    print(f"⏭️ Skipped future forecast hours: {skipped_future}")
-    print(f"📊 Total hours received from API: {len(times)}")
+    print("✅ RAW ingestion complete (past/current hours only)")
+    print(f"🆕 New raw docs inserted: {inserted}")
+    print(f"📊 Raw hours processed (kept): {processed}")
 
 if __name__ == "__main__":
     main()

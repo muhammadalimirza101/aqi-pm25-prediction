@@ -28,7 +28,8 @@ def main():
     df = pd.json_normalize(raw_list)
 
     # Ensure timestamp is datetime
-    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="mixed")
+    df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, errors="coerce", format="mixed")
+    df = df.dropna(subset=["timestamp"])
 
     # 3) Base columns
     # Pollutants are nested as pollutants.pm2_5 etc after json_normalize

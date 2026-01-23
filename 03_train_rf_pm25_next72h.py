@@ -27,7 +27,7 @@ registry_col = db["model_registry"]
 
 
 # ===============================
-# Model + Feature Columns
+# Feature + Target columns
 # ===============================
 FEATURE_COLS = [
     "hour",
@@ -51,7 +51,6 @@ MODEL_PATH = "models/rf_pm25_next72h.pkl"
 def main():
     # 1) Load training data from MongoDB
     docs = list(collection.find({"city": "Karachi"}, {"_id": 0}))
-
     if not docs:
         raise RuntimeError("No feature docs found in MongoDB for 72h training")
 
@@ -65,6 +64,8 @@ def main():
         raise RuntimeError("No usable training rows (features/targets contain NaNs).")
 
     # 3) Sort by timestamp for time-series split
+    if "timestamp" not in df.columns:
+        raise RuntimeError("timestamp column missing from feature collection.")
     df = df.sort_values("timestamp")
 
     X = df[FEATURE_COLS]
@@ -75,13 +76,17 @@ def main():
     X_train, X_test = X.iloc[:split_index], X.iloc[split_index:]
     y_train, y_test = y.iloc[:split_index], y.iloc[split_index:]
 
+    if len(X_train) < 10 or len(X_test) < 2:
+        raise RuntimeError(
+            f"Not enough rows to train/test split. Total usable rows: {len(df)}"
+        )
+
     # 5) Train MultiOutput RandomForest
     base_model = RandomForestRegressor(
         n_estimators=250,
         random_state=42,
         n_jobs=-1
     )
-
     model = MultiOutputRegressor(base_model)
     model.fit(X_train, y_train)
 
@@ -100,10 +105,7 @@ def main():
 
     print("💾 Model saved:", MODEL_PATH)
 
-    # 8) Save model in MongoDB registry (store bytes)
-    with open(MODEL_PATH, "rb") as f:
-        model_bytes = f.read()
-
+    # 8) Register ONLY metadata in MongoDB (model file is too large for a single MongoDB doc)
     registry_doc = {
         "model_name": "rf_pm25_next72h",
         "framework": "scikit-learn",
@@ -113,15 +115,14 @@ def main():
         "features_collection": "air_quality_features_karachi_pm25_72h",
         "feature_cols": FEATURE_COLS,
         "target_cols": TARGET_COLS,
-        "model_bytes": model_bytes,
         "metrics": {
             "mae_all_horizons_avg": float(mae)
-        }
+        },
+        "notes": "Model file stored as GitHub Actions artifact (too large for MongoDB 16MB document limit)."
     }
 
     registry_col.insert_one(registry_doc)
-
-    print("✅ Model registered in MongoDB: feature_store.model_registry")
+    print("✅ Model metadata registered in MongoDB (without model bytes)")
     print("📌 Saved as model_name = rf_pm25_next72h")
 
 

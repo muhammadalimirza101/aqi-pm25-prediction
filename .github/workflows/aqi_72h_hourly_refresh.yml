@@ -2,7 +2,7 @@ name: AQI 72h - Hourly Refresh (Ingest + Features)
 
 on:
   schedule:
-    - cron: "5 * * * *"
+    - cron: "*/5 * * * *"
   workflow_dispatch:
 
 jobs:

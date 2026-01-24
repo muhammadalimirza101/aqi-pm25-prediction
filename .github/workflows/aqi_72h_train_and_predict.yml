@@ -1,0 +1,57 @@
+name: AQI 72h - Train and Predict
+
+on:
+  workflow_dispatch:
+    inputs:
+      target_time:
+        description: "ISO time. Example: 2026-01-25T15:00:00Z or 2026-01-25T15:00:00+05:00"
+        required: true
+        default: "2026-01-25T15:00:00Z"
+
+jobs:
+  train_and_predict:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      # Keep data fresh (optional but recommended)
+      - name: Ingest raw (72h)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python 01_ingest_raw_karachi_72h.py
+
+      - name: Build features (72h)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python 02_build_features_pm25_next72h.py
+
+      - name: Train 72h model
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python 03_train_rf_pm25_next72h.py
+
+      - name: Upload model artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rf_pm25_next72h_model
+          path: models/rf_pm25_next72h.pkl
+
+      - name: Predict for requested time
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+          TARGET_TIME_UTC: ${{ inputs.target_time }}
+        run: |
+          ls -la models
+          python 05_predict_pm25_for_time_next72h.py

@@ -2,11 +2,8 @@ name: AQI 72h - Hourly Refresh (Ingest + Features)
 
 on:
   schedule:
-    - cron: "5 * * * *"   # every hour at minute 05 UTC
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
+    - cron: "5 * * * *"
+  workflow_dispatch:
 
 jobs:
   refresh:
@@ -20,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Show UTC time (confirm schedule)
+      - name: UTC time check (proof of scheduled run)
         run: date -u
 
       - name: Install dependencies

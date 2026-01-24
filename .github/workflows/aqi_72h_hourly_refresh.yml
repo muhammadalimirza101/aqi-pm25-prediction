@@ -1,0 +1,33 @@
+name: AQI 72h - Hourly Refresh (Ingest + Features)
+
+on:
+  schedule:
+    - cron: "5 * * * *"   # every hour at minute 05 UTC
+  workflow_dispatch: {}
+
+jobs:
+  refresh:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ingest raw (72h)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python 01_ingest_raw_karachi_72h.py
+
+      - name: Build features (72h)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: python 02_build_features_pm25_next72h.py

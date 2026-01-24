@@ -15,6 +15,8 @@ OPEN_METEO_URL = (
     f"?latitude={LAT}&longitude={LON}"
     "&hourly=pm10,pm2_5,carbon_monoxide,nitrogen_dioxide,sulphur_dioxide,ozone"
     "&timezone=UTC"
+    "&past_days=14"
+    "&forecast_days=0"
 )
 
 def main():

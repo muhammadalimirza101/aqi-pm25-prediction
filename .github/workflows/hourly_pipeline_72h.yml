@@ -1,0 +1,35 @@
+name: Hourly AQ Pipeline (72h) (Ingest -> Build 72h Features)
+
+on:
+  schedule:
+    - cron: "10 * * * *"   # every hour at minute 10 (UTC)
+  workflow_dispatch:
+
+jobs:
+  run-72h-hourly:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Ingest raw data (72h pipeline, past-only)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python 01_ingest_raw_karachi_72h.py
+
+      - name: Build features (72h)
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python 02_build_features_pm25_next72h.py

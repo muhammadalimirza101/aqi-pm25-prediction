@@ -1,5 +1,7 @@
+pymongo
+python-dotenv
+requests
 pandas
 numpy
-requests
-pymongo
 scikit-learn
+joblib

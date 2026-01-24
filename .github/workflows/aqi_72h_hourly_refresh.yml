@@ -5,6 +5,9 @@ on:
     - cron: "5 * * * *"   # every hour at minute 05 UTC
   workflow_dispatch: {}
 
+permissions:
+  contents: read
+
 jobs:
   refresh:
     runs-on: ubuntu-latest
@@ -16,6 +19,9 @@ jobs:
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
+
+      - name: Show UTC time (confirm schedule)
+        run: date -u
 
       - name: Install dependencies
         run: |

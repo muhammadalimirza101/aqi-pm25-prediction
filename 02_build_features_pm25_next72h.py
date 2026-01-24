@@ -4,175 +4,118 @@ import pandas as pd
 from pymongo import MongoClient
 
 CITY = "Karachi"
-
 RAW_COL = "air_quality_raw"
-
-# NEW collection (do NOT change your existing 1h collection)
 FEAT_COL_72H = "air_quality_features_karachi_pm25_72h"
+HORIZON_HOURS = 72
 
-HORIZON_HOURS = 72  # 3 days = 72 hours
-
-
-def _parse_mixed_utc_timestamps(series: pd.Series) -> pd.Series:
-    """
-    Accepts mixed timestamp strings:
-      - "YYYY-MM-DDTHH:MM"
-      - "YYYY-MM-DDTHH:MM:SS"
-      - "YYYY-MM-DDTHH:MM:SSZ"
-      - "YYYY-MM-DDTHH:MM:SS+00:00"
-    Returns timezone-aware UTC pandas datetime, with bad values -> NaT.
-    """
-    ts = series.astype(str).str.strip()
-
-    # Convert trailing "Z" -> "+00:00"
-    ts = ts.str.replace(r"Z$", "+00:00", regex=True)
-
-    # If format is "YYYY-MM-DDTHH:MM" (length 16), add seconds + timezone
-    ts = ts.where(ts.str.len() != 16, ts + ":00+00:00")
-
-    # If format is "YYYY-MM-DDTHH:MM:SS" (length 19), add timezone
-    ts = ts.where(ts.str.len() != 19, ts + "+00:00")
-
-    return pd.to_datetime(ts, utc=True, errors="coerce")
-
+FEATURE_COLS = [
+    "hour","day_of_week","is_weekend","month",
+    "pm2_5_lag_1h","pm2_5_lag_3h","pm2_5_lag_24h",
+    "pm2_5_roll_mean_3h","pm2_5_roll_mean_24h","pm2_5_roll_std_24h",
+    "pm2_5_diff_1h",
+]
 
 def main():
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
-        raise RuntimeError(
-            "MONGO_URI env var not set. Run: export MONGO_URI='mongodb+srv://...'"
-        )
+        raise RuntimeError("MONGO_URI env var not set")
+
+    now_utc_hour = datetime.now(timezone.utc).replace(minute=0, second=0, microsecond=0)
 
     client = MongoClient(mongo_uri)
     db = client["feature_store"]
     raw_col = db[RAW_COL]
     feat_col = db[FEAT_COL_72H]
 
-    # 1) Load raw data (Karachi only)
-    cursor = raw_col.find({"city": CITY}, {"_id": 0}).sort("timestamp", 1)
-    raw_list = list(cursor)
+    raw_list = list(raw_col.find({"city": CITY}, {"_id": 0}).sort("timestamp", 1))
+    if not raw_list:
+        raise RuntimeError("No raw data found in air_quality_raw")
 
-    # Need enough data for lag(24h) + horizon(72h) + buffer
-    min_needed = 24 + HORIZON_HOURS + 5
-    if len(raw_list) < min_needed:
-        raise RuntimeError(
-            f"Not enough raw data. Need at least ~{min_needed} rows, "
-            f"found {len(raw_list)}. Collect more hourly data."
-        )
-
-    # 2) Convert to DataFrame
     df = pd.json_normalize(raw_list)
 
-    # 3) Robust timestamp parsing (mixed formats)
-    df["timestamp"] = _parse_mixed_utc_timestamps(df["timestamp"])
-    df = df.dropna(subset=["timestamp"]).sort_values("timestamp").reset_index(drop=True)
+    # Robust parse for mixed ISO strings
+    # handles: "2026-01-21T00:00", "2026-01-21T00:00:00Z", "2026-01-21T00:00:00+00:00"
+    df["timestamp_dt"] = pd.to_datetime(df["timestamp"], utc=True, format="mixed", errors="coerce")
+    df = df.dropna(subset=["timestamp_dt"]).sort_values("timestamp_dt")
 
-    if df.empty:
-        raise RuntimeError("After parsing timestamps, no valid rows remained.")
+    # IMPORTANT: drop future timestamps (this fixes your base_time becoming 26th)
+    df = df[df["timestamp_dt"] <= pd.Timestamp(now_utc_hour)]
 
-    # 4) Base pollutant columns
-    base_cols = [
-        "pollutants.pm2_5",
-        "pollutants.pm10",
-        "pollutants.co",
-        "pollutants.no2",
-        "pollutants.so2",
-        "pollutants.o3",
-    ]
+    if len(df) < (24 + HORIZON_HOURS + 5):
+        raise RuntimeError(
+            f"Not enough *past* raw data (<= now). Need ~{24 + HORIZON_HOURS + 5}, found {len(df)}."
+        )
 
-    # Ensure pollutant columns are numeric (sometimes APIs/old docs can store strings)
-    for c in base_cols:
-        if c in df.columns:
-            df[c] = pd.to_numeric(df[c], errors="coerce")
+    # Base pollutant columns
+    df["pm2_5"] = df["pollutants.pm2_5"]
 
-    # Must have pm2_5 at least
-    if "pollutants.pm2_5" not in df.columns:
-        raise RuntimeError("Missing pollutants.pm2_5 in raw data. Cannot build features.")
-
-    # 5) Time features
-    df["hour"] = df["timestamp"].dt.hour
-    df["day_of_week"] = df["timestamp"].dt.dayofweek  # 0=Mon
-    df["month"] = df["timestamp"].dt.month
+    # Time features
+    df["hour"] = df["timestamp_dt"].dt.hour
+    df["day_of_week"] = df["timestamp_dt"].dt.dayofweek
+    df["month"] = df["timestamp_dt"].dt.month
     df["is_weekend"] = df["day_of_week"].isin([5, 6]).astype(int)
 
-    # 6) Lag features (PM2.5)
-    df["pm2_5_lag_1h"] = df["pollutants.pm2_5"].shift(1)
-    df["pm2_5_lag_3h"] = df["pollutants.pm2_5"].shift(3)
-    df["pm2_5_lag_24h"] = df["pollutants.pm2_5"].shift(24)
+    # Lag / Rolling / Diff
+    df["pm2_5_lag_1h"] = df["pm2_5"].shift(1)
+    df["pm2_5_lag_3h"] = df["pm2_5"].shift(3)
+    df["pm2_5_lag_24h"] = df["pm2_5"].shift(24)
 
-    # 7) Rolling features (PM2.5)
-    df["pm2_5_roll_mean_3h"] = df["pollutants.pm2_5"].rolling(3, min_periods=3).mean()
-    df["pm2_5_roll_mean_24h"] = df["pollutants.pm2_5"].rolling(24, min_periods=24).mean()
-    df["pm2_5_roll_std_24h"] = df["pollutants.pm2_5"].rolling(24, min_periods=24).std()
+    df["pm2_5_roll_mean_3h"] = df["pm2_5"].rolling(3).mean()
+    df["pm2_5_roll_mean_24h"] = df["pm2_5"].rolling(24).mean()
+    df["pm2_5_roll_std_24h"] = df["pm2_5"].rolling(24).std()
 
-    # 8) Diff feature
-    df["pm2_5_diff_1h"] = df["pollutants.pm2_5"] - df["pollutants.pm2_5"].shift(1)
+    df["pm2_5_diff_1h"] = df["pm2_5"] - df["pm2_5"].shift(1)
 
-    # 9) Targets: PM2.5 for the next 72 hours (t+1h ... t+72h)
+    # Targets t+1..t+72 from pm2_5 series
     target_cols = []
     for h in range(1, HORIZON_HOURS + 1):
         col = f"target_pm2_5_t_plus_{h}h"
-        df[col] = df["pollutants.pm2_5"].shift(-h)
+        df[col] = df["pm2_5"].shift(-h)
         target_cols.append(col)
 
-    # 10) Build output docs
-    out_cols = [
-        "city",
-        "country",
-        "source",
-        "timestamp",
-        "location.lat",
-        "location.lon",
-        *base_cols,
-        "hour",
-        "day_of_week",
-        "month",
-        "is_weekend",
-        "pm2_5_lag_1h",
-        "pm2_5_lag_3h",
-        "pm2_5_lag_24h",
-        "pm2_5_roll_mean_3h",
-        "pm2_5_roll_mean_24h",
-        "pm2_5_roll_std_24h",
-        "pm2_5_diff_1h",
-        *target_cols,
-    ]
-
-    # Some old docs might miss some pollutant keys -> ensure columns exist
-    for c in out_cols:
-        if c not in df.columns:
-            df[c] = pd.NA
-
-    df_out = df[out_cols].copy()
-
-    # Convert timestamp to consistent ISO string (UTC Z)
-    df_out["timestamp"] = df_out["timestamp"].dt.strftime("%Y-%m-%dT%H:%M:%SZ")
-
-    # Metadata
+    # Output docs
     built_at = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    df_out["features_built_at"] = built_at
-    df_out["max_target_horizon_hours"] = HORIZON_HOURS
+    df_out = pd.DataFrame({
+        "city": df.get("city", CITY),
+        "country": df.get("country", "Pakistan"),
+        "source": df.get("source", "open-meteo"),
+        "timestamp": df["timestamp_dt"].dt.strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "features_built_at": built_at,
+        "max_target_horizon_hours": HORIZON_HOURS,
+        "month": df["month"],
+        "hour": df["hour"],
+        "day_of_week": df["day_of_week"],
+        "is_weekend": df["is_weekend"],
+        "pm2_5_lag_1h": df["pm2_5_lag_1h"],
+        "pm2_5_lag_3h": df["pm2_5_lag_3h"],
+        "pm2_5_lag_24h": df["pm2_5_lag_24h"],
+        "pm2_5_roll_mean_3h": df["pm2_5_roll_mean_3h"],
+        "pm2_5_roll_mean_24h": df["pm2_5_roll_mean_24h"],
+        "pm2_5_roll_std_24h": df["pm2_5_roll_std_24h"],
+        "pm2_5_diff_1h": df["pm2_5_diff_1h"],
+    })
 
-    # 11) Upsert by (city, timestamp)
+    for col in target_cols:
+        df_out[col] = df[col]
+
+    # Upsert
     inserted = 0
     processed = 0
-
-    for rec in df_out.to_dict(orient="records"):
+    for rec in df_out.to_dict("records"):
         processed += 1
         res = feat_col.update_one(
-            {"city": rec.get("city", CITY), "timestamp": rec["timestamp"]},
+            {"city": rec["city"], "timestamp": rec["timestamp"]},
             {"$set": rec},
             upsert=True
         )
         if res.upserted_id is not None:
             inserted += 1
 
-    print("✅ 72-hour feature engineering complete")
-    print(f"🆕 New feature docs inserted: {inserted}")
-    print(f"📊 Total feature docs processed: {processed}")
+    latest_ts = df_out["timestamp"].iloc[-1]
+    print("✅ 72h features built (past-only)")
+    print(f"🆕 Inserted: {inserted} | processed: {processed}")
+    print(f"🕒 latest feature timestamp (<= now): {latest_ts}")
     print(f"📦 Collection: feature_store.{FEAT_COL_72H}")
-    print("ℹ️ Note: last 72 rows will have NaNs in target columns (no future data yet).")
-
 
 if __name__ == "__main__":
     main()

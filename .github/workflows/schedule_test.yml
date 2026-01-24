@@ -1,9 +1,13 @@
 name: Schedule Test
 
+# Source - https://stackoverflow.com/a
+# Posted by kelvin, modified by community. See post 'Timeline' for change history
+# Retrieved 2026-01-24, License - CC BY-SA 4.0
+
 on:
+  workflow_dispatch:
   schedule:
-    - cron: "*/5 * * * *"
-  workflow_dispatch: {}
+    - cron: '*/6 * * * *' #  run every hour
 
 jobs:
   test:

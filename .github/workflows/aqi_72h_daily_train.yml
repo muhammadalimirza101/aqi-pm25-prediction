@@ -2,11 +2,8 @@ name: AQI 72h - Daily Train Model
 
 on:
   schedule:
-    - cron: "30 2 * * *"  # daily 02:30 UTC
-  workflow_dispatch: {}
-
-permissions:
-  contents: read
+    - cron: "30 2 * * *"
+  workflow_dispatch:
 
 jobs:
   train:
@@ -20,7 +17,7 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Show UTC time (confirm schedule)
+      - name: UTC time check (proof of scheduled run)
         run: date -u
 
       - name: Install dependencies

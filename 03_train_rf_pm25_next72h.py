@@ -40,6 +40,7 @@ FEATURE_COLS = [
     "pm2_5_roll_mean_3h",
     "pm2_5_roll_mean_24h",
     "pm2_5_roll_std_24h",
+    "pm2_5_diff_1h",
 ]
 
 HORIZON_HOURS = 72

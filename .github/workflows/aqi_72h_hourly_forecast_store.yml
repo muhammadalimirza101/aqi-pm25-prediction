@@ -1,0 +1,47 @@
+name: AQI 72h - Hourly Forecast Store
+
+on:
+  workflow_dispatch: {}
+
+permissions:
+  actions: read
+  contents: read
+
+jobs:
+  forecast:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Download latest trained model artifact
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          mkdir -p models
+          RUN_ID=$(gh run list --workflow "AQI 72h - Daily Train Model" --status success --limit 1 --json databaseId -q '.[0].databaseId')
+          if [ -z "$RUN_ID" ]; then
+            echo "No successful daily-train runs found."
+            exit 1
+          fi
+          echo "Latest daily-train run id: $RUN_ID"
+          gh run download "$RUN_ID" -n rf_pm25_next72h_model -D models
+          ls -la models
+
+      - name: Generate and store 72h forecast
+        env:
+          MONGO_URI: ${{ secrets.MONGO_URI }}
+        run: |
+          python 06_generate_and_store_next72h_forecast.py

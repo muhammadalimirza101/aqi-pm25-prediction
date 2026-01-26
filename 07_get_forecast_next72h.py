@@ -1,62 +1,58 @@
+#!/usr/bin/env python3
 import os
 import json
-from datetime import datetime, timezone
+from pymongo import MongoClient, DESCENDING, ASCENDING
 
-from pymongo import MongoClient
-
-CITY = "Karachi"
 DB_NAME = "feature_store"
 FORECAST_COL = "aqi_forecast_karachi_next72h"
-
-
-def iso_now():
-    return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-
+CITY_DEFAULT = "Karachi"
 
 def main():
     mongo_uri = os.getenv("MONGO_URI")
     if not mongo_uri:
-        raise RuntimeError("MONGO_URI not set")
+        raise RuntimeError("MONGO_URI env var not set")
+
+    city = os.getenv("CITY", CITY_DEFAULT)
 
     client = MongoClient(mongo_uri)
-    db = client[DB_NAME]
-    col = db[FORECAST_COL]
+    col = client[DB_NAME][FORECAST_COL]
 
-    # 1) Find latest base_time for this city
-    latest = col.find_one(
-        {"city": CITY},
-        sort=[("base_time", -1)],
-        projection={"_id": 0, "base_time": 1},
+    # 1) Find latest base_time (ISO string sorting works correctly)
+    latest_doc = col.find_one(
+        {"city": city},
+        sort=[("base_time", DESCENDING)]
     )
-    if not latest:
-        raise RuntimeError(f"No forecast documents found in {DB_NAME}.{FORECAST_COL} for city={CITY}")
 
-    base_time = latest["base_time"]
+    if not latest_doc:
+        print(json.dumps({
+            "ok": False,
+            "error": f"No forecast found for city={city}",
+            "collection": f"{DB_NAME}.{FORECAST_COL}"
+        }, ensure_ascii=False, indent=2))
+        return
 
-    # 2) Fetch all 72 rows for that base_time, sorted by horizon_hours
+    latest_base_time = latest_doc["base_time"]
+
+    # 2) Load all 72 rows for that base_time sorted by horizon_hours
     cursor = col.find(
-        {"city": CITY, "base_time": base_time},
-        projection={"_id": 0},
-    ).sort("horizon_hours", 1)
+        {"city": city, "base_time": latest_base_time},
+        sort=[("horizon_hours", ASCENDING)]
+    )
 
-    rows = list(cursor)
+    rows = []
+    for d in cursor:
+        d.pop("_id", None)  # remove ObjectId for clean JSON output
+        rows.append(d)
 
-    # Safety check
-    if not rows:
-        raise RuntimeError(f"Latest base_time={base_time} exists but returned 0 rows. Something is wrong.")
-
-    # 3) Build clean JSON response
-    result = {
-        "city": CITY,
-        "base_time": base_time,
+    output = {
+        "ok": True,
+        "city": city,
+        "base_time": latest_base_time,
         "count": len(rows),
-        "generated_at_utc": iso_now(),
-        "forecast": rows,  # each item already contains target_time, predicted_pm2_5, predicted_aqi_us, category
+        "rows": rows
     }
 
-    # Print JSON (dashboard/API will return this)
-    print(json.dumps(result, indent=2))
-
+    print(json.dumps(output, ensure_ascii=False, indent=2))
 
 if __name__ == "__main__":
     main()
